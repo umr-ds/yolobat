@@ -1,0 +1,17 @@
+{
+  "_comment": "Placeholder showing the expected format. Replace with your own export; file_name is relative to AUDIO_DIR, bbox is [time_start, frequency_start, duration, bandwidth] in seconds and hertz.",
+  "images": [
+    {"id": 1, "file_name": "Ppip/recording_001.wav"},
+    {"id": 2, "file_name": "Myotis/recording_002.wav"}
+  ],
+  "categories": [
+    {"id": 1, "name": "Ppip"},
+    {"id": 2, "name": "Mdau"},
+    {"id": 3, "name": "feeding-buzz"}
+  ],
+  "annotations": [
+    {"image_id": 1, "category_id": 1, "bbox": [0.42, 42000.0, 0.004, 18000.0]},
+    {"image_id": 1, "category_id": 3, "bbox": [0.87, 38000.0, 0.003, 21000.0]},
+    {"image_id": 2, "category_id": 2, "bbox": [1.15, 46000.0, 0.005, 25000.0]}
+  ]
+}

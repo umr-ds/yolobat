@@ -1,0 +1,138 @@
+# Ultralytics YOLO 🚀, AGPL-3.0 license
+# Training configuration of the published YOLObat model
+
+task: detect # (str) YOLO task, i.e. detect, segment, classify, pose
+mode: train # (str) YOLO mode, i.e. train, val, predict, export, track, benchmark
+
+# Train settings -------------------------------------------------------------------------------------------------------
+model: yolo26.yaml # (str, optional) path to model file, i.e. yolov8n.pt, yolov8n.yaml
+data: # (str, optional) path to data file, i.e. coco8.yaml
+epochs: 150 # (int) number of epochs to train for
+time: # (float, optional) number of hours to train for, overrides epochs if supplied
+patience: 0 # (int) epochs to wait for no observable improvement for early stopping of training
+batch: 16 # (int) number of images per batch (-1 for AutoBatch)
+imgsz: # (list[h,w]) left empty: derived from sr, n_fft and hop_length below (384x1280 as configured)
+save: True # (bool) save train checkpoints and predict results
+save_period: 0 # (int) Save checkpoint every x epochs (disabled if < 1)
+device: 0 # (int | str | list, optional) device to run on, i.e. cuda device=0 or device=0,1,2,3 or device=cpu
+workers: 16 # (int) number of worker threads for data loading (per RANK if DDP)
+project: bats_experiments/yolobat # (str, optional) project name
+name: # (str, optional) experiment name, results saved to 'project/name' directory
+exist_ok: False # (bool) whether to overwrite existing experiment
+pretrained: False # (bool | str) whether to use a pretrained model (bool) or a model to load weights from (str)
+optimizer: MuSGD # (str) optimizer to use, choices=[SGD, Adam, Adamax, AdamW, NAdam, RAdam, RMSProp, MuSGD, auto]
+verbose: True # (bool) whether to print verbose output
+seed: 0 # (int) random seed for reproducibility
+deterministic: True # (bool) whether to enable deterministic mode
+single_cls: False # (bool) train multi-class data as single-class
+rect: False # (bool) rectangular training if mode='train' or rectangular validation if mode='val'
+lr_schedule: cos # choices [linear, exponential, plateau, cos]
+#cos_lr: False # (bool) use cosine learning rate scheduler
+close_mosaic: 15 # (int) disable mosaic augmentation for final epochs (0 to disable)
+resume: False # (bool) resume training from last checkpoint
+amp: True # (bool) Automatic Mixed Precision (AMP) training, choices=[True, False], True runs AMP check
+fraction: 1.0 # (float) fraction of training dataset to use (1.0 = all)
+profile: False # (bool) profile ONNX and TensorRT speeds during training for loggers
+freeze: # (int | list, optional) freeze first n layers, or freeze list of layer indices during training
+
+# Val/Test settings ----------------------------------------------------------------------------------------------------
+val: True # (bool) validate/test during training
+split: val # (str) dataset split to use for validation, i.e. 'val', 'test' or 'train'
+save_json: True # (bool) save results to JSON file
+conf: # (float, optional) object confidence threshold for detection (default 0.25 predict, 0.001 val)
+iou: 0.7 # (float) intersection over union (IoU) threshold for NMS
+max_det: 300 # (int) maximum number of detections per image
+half: False # (bool) use half precision (FP16)
+dnn: False # (bool) use OpenCV DNN for ONNX inference
+plots: True # (bool) save plots and images during train/val
+
+# Predict settings -----------------------------------------------------------------------------------------------------
+visualize: False # (bool) visualize model features
+augment: False # (bool) apply image augmentation to prediction sources
+agnostic_nms: True # (bool) class-agnostic NMS
+classes: # (int | list[int], optional) filter results by class, i.e. classes=0, or classes=[0,2,3]
+
+# Visualize settings ---------------------------------------------------------------------------------------------------
+save_txt: False # (bool) save results as .txt file
+save_conf: False # (bool) save results with confidence scores
+
+# Export settings ------------------------------------------------------------------------------------------------------
+format: onnx # (str) format to export to, choices at https://docs.ultralytics.com/modes/export/#export-formats
+optimize: False # (bool) TorchScript only; apply mobile optimizations to the scripted model
+simplify: True # (bool) ONNX/engine only; run graph simplifier for cleaner ONNX before runtime conversion
+opset: # (int, optional) ONNX/engine only; opset version for export; leave unset to use a tested default
+workspace: # (float, optional) engine (TensorRT) only; workspace size in GiB, e.g. 4
+int8: False # (bool) CoreML/TF INT8 quantization
+dynamic: True # (bool) ONNX/TF/TensorRT: dynamic axes
+nms: False # (bool) CoreML: add NMS
+
+# Hyperparameters ------------------------------------------------------------------------------------------------------
+lr0: 0.01 # (float) initial learning rate (i.e. SGD=1E-2, Adam=1E-3)
+lrf: 0.1 # (float) final learning rate (lr0 * lrf)
+momentum: 0.937 # (float) SGD momentum/Adam beta1
+weight_decay: 0.0005 # (float) optimizer weight decay 5e-4
+warmup_epochs: 3.0 # (float) warmup epochs (fractions ok)
+warmup_momentum: 0.8 # (float) warmup initial momentum
+warmup_bias_lr: 0.1 # (float) warmup initial bias lr
+box: 7.5 # (float) box loss gain
+cls: 0.5 # (float) cls loss gain (scale with pixels)
+dfl: 1.5 # (float) dfl loss gain
+nbs: 64 # (int) nominal batch size
+degrees: 0.0 # (float) image rotation (+/- deg)
+translate: 0.0 # (float) image translation (+/- fraction)
+scale: 0.0 # (float) image scale (+/- gain)
+shear: 0.0 # (float) image shear (+/- deg)
+perspective: 0.0 # (float) image perspective (+/- fraction), range 0-0.001
+mosaic: 1.0 # (float) image mosaic (probability)
+
+# Custom config.yaml ---------------------------------------------------------------------------------------------------
+cfg: # (str, optional) for overriding defaults.yaml
+
+# new parameters --------------------------------------------------------------------------------------------------------
+# data settings ---------------------------------------------------------------------------------------------------------
+dataset_name: yolobat # the files under var/data_exports are named after this, see README
+
+snippets: True # use random audio snippets of length analyze_length from files
+snippet_ratio: 0.5 # fraction of snippets to use from each audio file. max(1, math.ceil(audio['duration'] / analyze_length) * snippet_ratio)
+
+# spec parameters
+analyze_length: 1.0
+n_fft: 766
+hop_length: 200
+sr: 256000
+cut_low_freq: 0
+window_func: hann
+pos_enc: True
+lin: False
+asymmetric_smoothing: True # taxonomy-aware label smoothing towards species with similar calls
+asymmetric_smoothing_eps: 0.05 # smoothing mass redistributed to sister species when asymmetric_smoothing=True
+general_smoothing_eps: 0.0 # uniform label smoothing across all classes, no taxonomy (0=off)
+
+# audio augmentation parameters -----------------------------------------------------------------------------------------
+augment_audio: True
+
+gain: 0.3
+min_gain_db: -12
+max_gain_db: 12
+
+crickets_noise: 0.25 # probability of mixing in a background recording
+
+# spectrogram augmentation parameters -----------------------------------------------------------------------------------
+augment_spectrogram: True
+mixup: 0.3 # (float) image mixup (probability)
+
+xy_masking: 0.5
+xy_num_masks_x: [0, 35]
+xy_num_masks_y: [0, 15]
+xy_mask_x_length: [0, 7]
+xy_mask_y_length: [0, 3]
+
+pixel_dropout: 0.5
+pd_dropout_prob: 0.01
+
+bbox_min_visibility: 0.5 #removes boxes when not visible due to spec augmentations
+clip_bboxes: True
+
+# oversampling ---------------------------------------------------------------------------------------------------------
+oversampling: True # (bool) oversample minority classes
+label_weights: unbalanced # 'balanced' or 'unbalanced'

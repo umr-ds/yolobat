@@ -1,0 +1,11 @@
+# ultralytics (patched) and torch come from the container, see the Dockerfile
+numpy
+scipy
+matplotlib
+pandas
+PyYAML
+tqdm
+librosa
+audiomentations[extras]
+pycocotools
+onnxscript

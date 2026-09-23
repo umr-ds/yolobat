@@ -1,0 +1,23 @@
+__pycache__/
+.ipynb_checkpoints/
+.idea/
+.vscode/
+
+# training and export output
+# written by CustomTrainer on every run
+classes.yaml
+runs/*
+!runs/.gitkeep
+var/*
+# the placeholder export, which shows the format an own export needs
+!var/data_exports/
+var/data_exports/*
+!var/data_exports/yolobat_dataset.json
+!var/data_exports/yolobat_train.txt
+!var/data_exports/yolobat_val.txt
+*.pt
+*.onnx
+
+# local container configuration
+.env
+docker-compose.override.yml

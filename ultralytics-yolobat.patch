@@ -1,0 +1,1284 @@
+diff --git a/ultralytics/cfg/__init__.py b/ultralytics/cfg/__init__.py
+index 0dceae32..07f93085 100644
+--- a/ultralytics/cfg/__init__.py
++++ b/ultralytics/cfg/__init__.py
+@@ -306,7 +306,9 @@ def get_cfg(
+     # Merge overrides
+     if overrides:
+         overrides = cfg2dict(overrides)
+-        check_dict_alignment(cfg, overrides)
++        if "save_dir" not in cfg:
++            overrides.pop("save_dir", None)  # special override keys to ignore
++        #check_dict_alignment(cfg, overrides)
+         cfg = {**cfg, **overrides}  # merge cfg and overrides dicts (prefer overrides)
+ 
+     # Special handling for numeric project/name
+diff --git a/ultralytics/data/augment.py b/ultralytics/data/augment.py
+index 34929219..2f1f38ed 100644
+--- a/ultralytics/data/augment.py
++++ b/ultralytics/data/augment.py
+@@ -13,6 +13,7 @@ import torch
+ from PIL import Image
+ from torch.nn import functional as F
+ 
++from types import SimpleNamespace
+ from ultralytics.data.utils import polygons2masks, polygons2masks_overlap
+ from ultralytics.utils import LOGGER, IterableSimpleNamespace, colorstr
+ from ultralytics.utils.checks import check_version
+@@ -500,9 +501,9 @@ class Mosaic(BaseMixTransform):
+         assert n in {4, 9}, "grid must be equal to 4 or 9."
+         super().__init__(dataset=dataset, p=p)
+         self.imgsz = imgsz
+-        self.border = (-imgsz // 2, -imgsz // 2)  # width, height
++        self.border = (-imgsz[1] // 2, -imgsz[0] // 2)  # width, height
+         self.n = n
+-        self.buffer_enabled = self.dataset.cache != "ram"
++        self.buffer_enabled = False #self.dataset.cache != "ram"
+ 
+     def get_indexes(self):
+         """Return a list of random indexes from the dataset for mosaic augmentation.
+@@ -636,7 +637,7 @@ class Mosaic(BaseMixTransform):
+         """
+         mosaic_labels = []
+         s = self.imgsz
+-        yc, xc = (int(random.uniform(-x, 2 * s + x)) for x in self.border)  # mosaic center x, y
++        yc, xc = (int(random.uniform(-x, 2 * size + x)) for x, size in zip(self.border[::-1], s))  # mosaic center x, y
+         for i in range(4):
+             labels_patch = labels if i == 0 else labels["mix_labels"][i - 1]
+             # Load image
+@@ -645,17 +646,17 @@ class Mosaic(BaseMixTransform):
+ 
+             # Place img in img4
+             if i == 0:  # top left
+-                img4 = np.full((s * 2, s * 2, img.shape[2]), 114, dtype=np.uint8)  # base image with 4 tiles
++                img4 = np.full((h * 2, w * 2, img.shape[2]), 114, dtype=np.uint8)  # base image with 4 tiles
+                 x1a, y1a, x2a, y2a = max(xc - w, 0), max(yc - h, 0), xc, yc  # xmin, ymin, xmax, ymax (large image)
+                 x1b, y1b, x2b, y2b = w - (x2a - x1a), h - (y2a - y1a), w, h  # xmin, ymin, xmax, ymax (small image)
+             elif i == 1:  # top right
+-                x1a, y1a, x2a, y2a = xc, max(yc - h, 0), min(xc + w, s * 2), yc
++                x1a, y1a, x2a, y2a = xc, max(yc - h, 0), min(xc + w, w * 2), yc
+                 x1b, y1b, x2b, y2b = 0, h - (y2a - y1a), min(w, x2a - x1a), h
+             elif i == 2:  # bottom left
+-                x1a, y1a, x2a, y2a = max(xc - w, 0), yc, xc, min(s * 2, yc + h)
++                x1a, y1a, x2a, y2a = max(xc - w, 0), yc, xc, min(h * 2, yc + h)
+                 x1b, y1b, x2b, y2b = w - (x2a - x1a), 0, w, min(y2a - y1a, h)
+             elif i == 3:  # bottom right
+-                x1a, y1a, x2a, y2a = xc, yc, min(xc + w, s * 2), min(s * 2, yc + h)
++                x1a, y1a, x2a, y2a = xc, yc, min(xc + w, w * 2), min(h * 2, yc + h)
+                 x1b, y1b, x2b, y2b = 0, 0, min(w, x2a - x1a), min(y2a - y1a, h)
+ 
+             img4[y1a:y2a, x1a:x2a] = img[y1b:y2b, x1b:x2b]  # img4[ymin:ymax, xmin:xmax]
+@@ -796,7 +797,7 @@ class Mosaic(BaseMixTransform):
+             return {}
+         cls = []
+         instances = []
+-        imgsz = self.imgsz * 2  # mosaic imgsz
++        imgsz = [self.imgsz[0] * 2, self.imgsz[1] * 2]  # mosaic imgsz
+         for labels in mosaic_labels:
+             cls.append(labels["cls"])
+             instances.append(labels["instances"])
+@@ -804,12 +805,13 @@ class Mosaic(BaseMixTransform):
+         final_labels = {
+             "im_file": mosaic_labels[0]["im_file"],
+             "ori_shape": mosaic_labels[0]["ori_shape"],
+-            "resized_shape": (imgsz, imgsz),
++            "resized_shape": imgsz,
+             "cls": np.concatenate(cls, 0),
+             "instances": Instances.concatenate(instances, axis=0),
+             "mosaic_border": self.border,
++            "ratio_pad": mosaic_labels[0]["ratio_pad"],
+         }
+-        final_labels["instances"].clip(imgsz, imgsz)
++        final_labels["instances"].clip(imgsz[1], imgsz[0])
+         good = final_labels["instances"].remove_zero_area_boxes()
+         final_labels["cls"] = final_labels["cls"][good]
+         if "texts" in mosaic_labels[0]:
+@@ -869,7 +871,14 @@ class MixUp(BaseMixTransform):
+         """
+         r = np.random.beta(32.0, 32.0)  # mixup ratio, alpha=beta=32.0
+         labels2 = labels["mix_labels"][0]
+-        labels["img"] = (labels["img"] * r + labels2["img"] * (1 - r)).astype(np.uint8)
++        labels["instances"].convert_bbox("xywh")
++        labels["instances"].normalize(*labels2["img"].shape[:2][::-1])
++        mix_images = getattr(self.dataset, "mix_images", None)
++        if mix_images is not None:
++            labels["img"] = mix_images(labels["img"], labels2["img"], r)
++        else:
++            labels["img"] = (labels["img"] * r + labels2["img"] * (1 - r)).astype(np.uint8)
++        #labels["img"] = np.maximum(labels["img"], labels2["img"]).astype(np.uint8)
+         labels["instances"] = Instances.concatenate([labels["instances"], labels2["instances"]], axis=0)
+         labels["cls"] = np.concatenate([labels["cls"], labels2["cls"]], 0)
+         return labels
+@@ -1260,7 +1269,6 @@ class RandomPerspective:
+         """
+         if self.pre_transform and "mosaic_border" not in labels:
+             labels = self.pre_transform(labels)
+-        labels.pop("ratio_pad", None)  # do not need ratio pad
+ 
+         img = labels["img"]
+         cls = labels["cls"]
+@@ -1270,7 +1278,7 @@ class RandomPerspective:
+         instances.denormalize(*img.shape[:2][::-1])
+ 
+         border = labels.pop("mosaic_border", self.border)
+-        self.size = img.shape[1] + border[1] * 2, img.shape[0] + border[0] * 2  # w, h
++        self.size = img.shape[1] + border[0] * 2, img.shape[0] + border[1] * 2  # w, h
+         # M is affine matrix
+         # Scale for func:`box_candidates`
+         img, M, scale = self.affine_transform(img, border)
+@@ -1635,9 +1643,6 @@ class LetterBox:
+             pad_img[top : top + h, left : left + w] = img
+             img = pad_img
+ 
+-        if labels.get("ratio_pad"):
+-            labels["ratio_pad"] = (labels["ratio_pad"], (left, top))  # for evaluation
+-
+         if len(labels):
+             labels = self._update_labels(labels, ratio, left, top)
+             labels["img"] = img
+@@ -1800,7 +1805,7 @@ class Albumentations:
+         - Some transforms are applied with very low probability (0.01) by default.
+     """
+ 
+-    def __init__(self, p: float = 1.0, transforms: list | None = None) -> None:
++    def __init__(self, hyp: SimpleNamespace=None, p: float = 1.0, transforms: list | None = None) -> None: # type: ignore
+         """Initialize the Albumentations transform object for YOLO bbox formatted parameters.
+ 
+         This class applies various image augmentations using the Albumentations library, including Blur, Median Blur,
+@@ -1812,6 +1817,7 @@ class Albumentations:
+             transforms (list | None): List of custom Albumentations transforms. If None, uses default transforms.
+         """
+         self.p = p
++        self.hyp = hyp
+         self.transform = None
+         prefix = colorstr("albumentations: ")
+ 
+@@ -1870,13 +1876,14 @@ class Albumentations:
+             # Transforms, use custom transforms if provided, otherwise use defaults
+             T = (
+                 [
+-                    A.Blur(p=0.01),
+-                    A.MedianBlur(p=0.01),
+-                    A.ToGray(p=0.01),
+-                    A.CLAHE(p=0.01),
+-                    A.RandomBrightnessContrast(p=0.0),
+-                    A.RandomGamma(p=0.0),
+-                    A.ImageCompression(quality_range=(75, 100), p=0.0),
++                    A.XYMasking(
++                        num_masks_x=hyp.xy_num_masks_x,  # ScaleIntType
++                        num_masks_y=hyp.xy_num_masks_y,  # ScaleIntType
++                        mask_x_length=hyp.xy_mask_x_length,  # ScaleIntType
++                        mask_y_length=hyp.xy_mask_y_length,  # ScaleIntType
++                        p=hyp.xy_masking,  # float
++                    ),
++                    A.PixelDropout(dropout_prob=hyp.pd_dropout_prob, per_channel=True, p=hyp.pixel_dropout),
+                 ]
+                 if transforms is None
+                 else transforms
+@@ -1885,7 +1892,10 @@ class Albumentations:
+             # Compose transforms
+             self.contains_spatial = any(transform.__class__.__name__ in spatial_transforms for transform in T)
+             self.transform = (
+-                A.Compose(T, bbox_params=A.BboxParams(format="yolo", label_fields=["class_labels"]))
++                A.Compose(T, bbox_params=A.BboxParams(format="yolo",
++                                                      label_fields=["class_labels"],
++                                                      min_visibility=hyp.bbox_min_visibility,
++                                                      clip=True))
+                 if self.contains_spatial
+                 else A.Compose(T)
+             )
+@@ -1934,6 +1944,9 @@ class Albumentations:
+         im = labels["img"]
+         if im.shape[2] != 3:  # Only apply Albumentation on 3-channel images
+             return labels
++        if self.hyp.pos_enc:
++            pos_enc = im.copy()[:, :, 1:]
++            im = np.stack([im.copy()[:, :, 0]] * 3, axis=-1)
+ 
+         if self.contains_spatial:
+             cls = labels["cls"]
+@@ -1951,6 +1964,8 @@ class Albumentations:
+         else:
+             labels["img"] = self.transform(image=labels["img"])["image"]  # transformed
+ 
++        if self.hyp.pos_enc:
++            labels["img"] = np.concatenate([labels["img"][:, :, 0:1], pos_enc], axis=-1)
+         return labels
+ 
+ 
+@@ -2420,21 +2435,10 @@ def v8_transforms(dataset, imgsz: int, hyp: IterableSimpleNamespace, stretch: bo
+         scale=hyp.scale,
+         shear=hyp.shear,
+         perspective=hyp.perspective,
+-        pre_transform=None if stretch else LetterBox(new_shape=(imgsz, imgsz)),
++        pre_transform=None if stretch else LetterBox(new_shape=(imgsz[0], imgsz[1])),
+     )
+ 
+-    pre_transform = Compose([mosaic, affine])
+-    if hyp.copy_paste_mode == "flip":
+-        pre_transform.insert(1, CopyPaste(p=hyp.copy_paste, mode=hyp.copy_paste_mode))
+-    else:
+-        pre_transform.append(
+-            CopyPaste(
+-                dataset,
+-                pre_transform=Compose([Mosaic(dataset, imgsz=imgsz, p=hyp.mosaic), affine]),
+-                p=hyp.copy_paste,
+-                mode=hyp.copy_paste_mode,
+-            )
+-        )
++    pre_transform = Compose([])#mosaic])#, affine])
+     flip_idx = dataset.data.get("flip_idx", [])  # for keypoints augmentation
+     if dataset.use_keypoints:
+         kpt_shape = dataset.data.get("kpt_shape", None)
+@@ -2446,13 +2450,10 @@ def v8_transforms(dataset, imgsz: int, hyp: IterableSimpleNamespace, stretch: bo
+ 
+     return Compose(
+         [
+-            pre_transform,
+             MixUp(dataset, pre_transform=pre_transform, p=hyp.mixup),
+-            CutMix(dataset, pre_transform=pre_transform, p=hyp.cutmix),
+-            Albumentations(p=1.0, transforms=getattr(hyp, "augmentations", None)),
+-            RandomHSV(hgain=hyp.hsv_h, sgain=hyp.hsv_s, vgain=hyp.hsv_v),
+-            RandomFlip(direction="vertical", p=hyp.flipud, flip_idx=flip_idx),
+-            RandomFlip(direction="horizontal", p=hyp.fliplr, flip_idx=flip_idx),
++            mosaic,
++            affine,
++            Albumentations(hyp=hyp, p=1.0, transforms=getattr(hyp, "augmentations", None)),
+         ]
+     )  # transforms
+ 
+diff --git a/ultralytics/data/build.py b/ultralytics/data/build.py
+index fc4169fd..2a774166 100644
+--- a/ultralytics/data/build.py
++++ b/ultralytics/data/build.py
+@@ -242,8 +242,8 @@ def build_yolo_dataset(
+         rect=cfg.rect or rect,  # rectangular batches
+         cache=cfg.cache or None,
+         single_cls=cfg.single_cls or False,
+-        stride=stride,
+-        pad=0.0 if mode == "train" else 0.5,
++        stride=int(stride),
++        pad=0.0, # if mode == "train" else 0.5,
+         prefix=colorstr(f"{mode}: "),
+         task=cfg.task,
+         classes=cfg.classes,
+diff --git a/ultralytics/engine/exporter.py b/ultralytics/engine/exporter.py
+index 17b2cf73..107fbffc 100644
+--- a/ultralytics/engine/exporter.py
++++ b/ultralytics/engine/exporter.py
+@@ -66,6 +66,7 @@ import re
+ import shutil
+ import subprocess
+ import time
++from types import SimpleNamespace
+ from copy import deepcopy
+ from datetime import datetime
+ from pathlib import Path
+@@ -318,7 +319,9 @@ class Exporter:
+             overrides (dict, optional): Configuration overrides.
+             _callbacks (dict, optional): Dictionary of callback functions.
+         """
+-        self.args = get_cfg(cfg, overrides)
++        self.args: SimpleNamespace = get_cfg(cfg, overrides)
++
++
+         self.callbacks = _callbacks or callbacks.get_default_callbacks()
+         callbacks.add_integration_callbacks(self)
+ 
+@@ -471,7 +474,8 @@ class Exporter:
+                 "(torchscript, onnx, openvino, engine, coreml) formats. "
+                 "See https://docs.ultralytics.com/models/yolo-world for details."
+             )
+-            model.clip_model = None  # openvino int8 export error: https://github.com/ultralytics/ultralytics/pull/18445
++        self.args.data = model.args['data']
++        model.clip_model = None  # openvino int8 export error: https://github.com/ultralytics/ultralytics/pull/18445
+         if self.args.int8 and not self.args.data:
+             self.args.data = DEFAULT_CFG.data or TASK2DATA[getattr(model, "task", "detect")]  # assign default data
+             LOGGER.warning(
+@@ -544,7 +548,11 @@ class Exporter:
+         # Assign
+         self.im = im
+         self.model = model
+-        self.file = file
++        # exports go to output_dir/<version>/<version>_<release>; without one they
++        # land beside the checkpoint, as upstream does
++        base = Path(getattr(self.args, "output_dir", None) or Path(file).parent)
++        self.file = base / self.args.version / f"{self.args.version}_{self.args.release}"
++        self.file.mkdir(parents=True, exist_ok=True)
+         self.output_shape = (
+             tuple(y.shape)
+             if isinstance(y, torch.Tensor)
+@@ -558,6 +566,9 @@ class Exporter:
+             "author": "Ultralytics",
+             "date": datetime.now().isoformat(),
+             "version": __version__,
++            "training": self.args.name,
++            "model_version": self.args.version,
++            "release": self.args.release,
+             "license": "AGPL-3.0 License (https://ultralytics.com/license)",
+             "docs": "https://docs.ultralytics.com",
+             "stride": int(max(model.stride)),
+@@ -565,6 +576,9 @@ class Exporter:
+             "batch": self.args.batch,
+             "imgsz": self.imgsz,
+             "names": model.names,
++            "n_fft": self.args.n_fft,
++            "sample_rate": self.args.sr,
++            "hop_length": self.args.hop_length,
+             "args": {k: v for k, v in self.args if k in fmt_keys},
+             "channels": model.yaml.get("channels", 3),
+             "end2end": getattr(model, "end2end", False),
+@@ -590,7 +604,7 @@ class Exporter:
+         if onnx:  # ONNX
+             f[2] = self.export_onnx()
+         if xml:  # OpenVINO
+-            f[3] = self.export_openvino()
++            f[3] = self.export_openvino(dataset=self.args.dataset)
+         if coreml:  # CoreML
+             f[4] = self.export_coreml()
+         if is_tf_format:  # TensorFlow formats
+@@ -634,7 +648,7 @@ class Exporter:
+             q = "int8" if self.args.int8 else "half" if self.args.half else ""  # quantization
+             LOGGER.info(
+                 f"\nExport complete ({time.time() - t:.1f}s)"
+-                f"\nResults saved to {colorstr('bold', file.parent.resolve())}"
++                f"\nResults saved to {colorstr('bold', self.file.resolve())}"
+                 f"\nPredict:         yolo predict task={model.task} model={f} imgsz={imgsz} {q}"
+                 f"\nValidate:        yolo val task={model.task} model={f} imgsz={imgsz} data={data} {q} {s}"
+                 f"\nVisualize:       https://netron.app"
+@@ -643,11 +657,11 @@ class Exporter:
+         self.run_callbacks("on_export_end")
+         return f  # path to final export artifact
+ 
+-    def get_int8_calibration_dataloader(self, prefix=""):
++    def get_int8_calibration_dataloader(self, prefix="", dataset=None):
+         """Build and return a dataloader for calibration of INT8 models."""
+         LOGGER.info(f"{prefix} collecting INT8 calibration images from 'data={self.args.data}'")
+         data = (check_cls_dataset if self.model.task == "classify" else check_det_dataset)(self.args.data)
+-        dataset = YOLODataset(
++        dataset = dataset if dataset else YOLODataset(
+             data[self.args.split or "val"],
+             data=data,
+             fraction=self.args.fraction,
+@@ -672,7 +686,7 @@ class Exporter:
+     def export_torchscript(self, prefix=colorstr("TorchScript:")):
+         """Export YOLO model to TorchScript format."""
+         LOGGER.info(f"\n{prefix} starting export with torch {TORCH_VERSION}...")
+-        f = self.file.with_suffix(".torchscript")
++        f = self.file / "model.torchscript"
+ 
+         ts = torch.jit.trace(NMSModel(self.model, self.args) if self.args.nms else self.model, self.im, strict=False)
+         extra_files = {"config.txt": json.dumps(self.metadata)}  # torch._C.ExtraFilesMap()
+@@ -694,12 +708,16 @@ class Exporter:
+         check_requirements(requirements)
+         import onnx
+ 
++        self.file = self.file / "onnx"
++
++        self.file.mkdir(parents=True, exist_ok=False)
++
+         opset = self.args.opset or best_onnx_opset(onnx, cuda="cuda" in self.device.type)
+         LOGGER.info(f"\n{prefix} starting export with onnx {onnx.__version__} opset {opset}...")
+         if self.args.nms:
+             assert TORCH_1_13, f"'nms=True' ONNX export requires torch>=1.13 (found torch=={TORCH_VERSION})"
+ 
+-        f = str(self.file.with_suffix(".onnx"))
++        f = str(self.file / "model.onnx")
+         output_names = ["output0", "output1"] if self.model.task == "segment" else ["output0"]
+         dynamic = self.args.dynamic
+         if dynamic:
+@@ -764,12 +782,14 @@ class Exporter:
+         return f
+ 
+     @try_export
+-    def export_openvino(self, prefix=colorstr("OpenVINO:")):
++    def export_openvino(self, dataset=None, prefix=colorstr("OpenVINO:")):
+         """Export YOLO model to OpenVINO format."""
+         # OpenVINO <= 2025.1.0 error on macOS 15.4+: https://github.com/openvinotoolkit/openvino/issues/30023"
+         check_requirements("openvino>=2025.2.0" if MACOS and MACOS_VERSION >= "15.4" else "openvino>=2024.0.0")
+         import openvino as ov
+ 
++        self.file = self.file / "openvino"
++
+         LOGGER.info(f"\n{prefix} starting export with openvino {ov.__version__}...")
+         assert TORCH_2_1, f"OpenVINO export requires torch>=2.1 but torch=={TORCH_VERSION} is installed"
+         ov_model = ov.convert_model(
+@@ -793,8 +813,8 @@ class Exporter:
+             YAML.save(Path(file).parent / "metadata.yaml", self.metadata)  # add metadata.yaml
+ 
+         if self.args.int8:
+-            fq = str(self.file).replace(self.file.suffix, f"_int8_openvino_model{os.sep}")
+-            fq_ov = str(Path(fq) / self.file.with_suffix(".xml").name)
++            fq = self.file
++            fq_ov = str(Path(fq) / "model.xml")
+             # INT8 requires nncf, nncf requires packaging>=23.2 https://github.com/openvinotoolkit/nncf/issues/3463
+             check_requirements("packaging>=23.2")  # must be installed first to build nncf wheel
+             check_requirements("nncf>=2.14.0,<3.0.0" if not TORCH_2_3 else "nncf>=2.14.0")
+@@ -824,8 +844,8 @@ class Exporter:
+             serialize(quantized_ov_model, fq_ov)
+             return fq
+ 
+-        f = str(self.file).replace(self.file.suffix, f"_openvino_model{os.sep}")
+-        f_ov = str(Path(f) / self.file.with_suffix(".xml").name)
++        f = self.file
++        f_ov = str(Path(f) / "model.xml")
+ 
+         serialize(ov_model, f_ov)
+         return f
+@@ -888,8 +908,10 @@ class Exporter:
+         import ncnn
+         import pnnx
+ 
++        self.file = self.file / "ncnn"
++
+         LOGGER.info(f"\n{prefix} starting export with NCNN {ncnn.__version__} and PNNX {pnnx.__version__}...")
+-        f = Path(str(self.file).replace(self.file.suffix, f"_ncnn_model{os.sep}"))
++        f = Path(self.file)
+ 
+         ncnn_args = dict(
+             ncnnparam=(f / "model.ncnn.param").as_posix(),
+diff --git a/ultralytics/engine/trainer.py b/ultralytics/engine/trainer.py
+index 98fc762a..decc6c80 100644
+--- a/ultralytics/engine/trainer.py
++++ b/ultralytics/engine/trainer.py
+@@ -183,7 +183,8 @@ class BaseTrainer:
+         # Model and Dataset
+         self.model = check_model_file_from_stem(self.args.model)  # add suffix, i.e. yolo26n -> yolo26n.pt
+         with torch_distributed_zero_first(LOCAL_RANK):  # avoid auto-downloading dataset multiple times
+-            self.data = self.get_dataset()
++            self.data["train"], self.data["val"] = self.get_dataset()
++            self.data["channels"] = 3 # TODO: maybe not hardcode here
+ 
+         self.ema = None
+ 
+@@ -245,11 +246,24 @@ class BaseTrainer:
+ 
+     def _setup_scheduler(self):
+         """Initialize training learning rate scheduler."""
+-        if self.args.cos_lr:
+-            self.lf = one_cycle(1, self.args.lrf, self.epochs)  # cosine 1->hyp['lrf']
+-        else:
+-            self.lf = lambda x: max(1 - x / self.epochs, 0) * (1.0 - self.args.lrf) + self.args.lrf  # linear
+-        self.scheduler = optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=self.lf)
++        match self.args.lr_schedule:
++            case 'linear':
++                self.lf = lambda x: max(1 - x / self.epochs, 0) * (1.0 - self.args.lrf) + self.args.lrf  # linear
++            case 'plateau':
++                self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(self.optimizer,
++                                                                  mode='max',
++                                                                  factor=0.2,
++                                                                  patience=10,
++                                                                  min_lr=self.args.lrf)
++            case 'exponential':
++                self.scheduler = optim.lr_scheduler.ExponentialLR(self.optimizer,
++                                                                  gamma=0.95)
++            case 'cos':
++                self.lf = one_cycle(1, self.args.lrf, self.epochs)  # cosine 1->hyp['lrf']
++            case _:
++                self.lf = lambda x: max(1 - x / self.epochs, 0) * (1.0 - self.args.lrf) + self.args.lrf  # linear
++        if not self.scheduler:
++            self.scheduler = optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=self.lf)
+ 
+     def _setup_ddp(self):
+         """Initialize and set the DistributedDataParallel parameters for training."""
+@@ -349,6 +363,11 @@ class BaseTrainer:
+         self.validator = self.get_validator()
+         self.ema = ModelEMA(self.model)
+         if RANK in {-1, 0}:
++            # Note: When training DOTA dataset, double batch size could get OOM on images with >2000 objects.
++            self.val_loader = self.get_dataloader(
++                self.valset, batch_size=self.args.batch_size if self.args.task == "obb" else self.args.batch_size * 2, rank=-1, mode="val"
++            )
++            self.validator = self.get_validator()
+             metric_keys = self.validator.metrics.keys + self.label_loss_items(prefix="val")
+             self.metrics = dict(zip(metric_keys, [0] * len(metric_keys)))
+             if self.args.plots:
+@@ -387,9 +406,13 @@ class BaseTrainer:
+         while True:
+             self.epoch = epoch
+             self.run_callbacks("on_train_epoch_start")
++
+             with warnings.catch_warnings():
+                 warnings.simplefilter("ignore")  # suppress 'Detected lr_scheduler.step() before optimizer.step()'
+-                self.scheduler.step()
++                if self.args.lr_schedule == 'plateau':
++                    self.scheduler.step(self.fitness if self.fitness else 0)
++                else:
++                    self.scheduler.step()
+ 
+             self._model_train()
+             if RANK != -1:
+@@ -417,8 +440,8 @@ class BaseTrainer:
+                             ni,
+                             xi,
+                             [
+-                                self.args.warmup_bias_lr if x.get("param_group") == "bias" else 0.0,
+-                                x["initial_lr"] * self.lf(epoch),
++                                self.args.warmup_bias_lr if x.get("param_group") == "bias" else 0.0, self.args.lr0 if self.args.lr_schedule in ['plateau', 'exponential'] else
++                            x["initial_lr"] * self.lf(epoch),
+                             ],
+                         )
+                         if "momentum" in x:
+@@ -523,7 +546,7 @@ class BaseTrainer:
+ 
+             self.nan_recovery_attempts = 0
+             if RANK in {-1, 0}:
+-                self.save_metrics(metrics={**self.label_loss_items(self.tloss), **self.metrics, **self.lr})
++                self.save_metrics(metrics={**self.label_loss_items(self.tloss), **self.metrics, **{'val/fitness': self.fitness}, **self.lr})
+                 self.stop |= self.stopper(epoch + 1, self.fitness) or final_epoch
+                 if self.args.time:
+                     self.stop |= (time.time() - self.train_time_start) > (self.args.time * 3600)
+diff --git a/ultralytics/engine/validator.py b/ultralytics/engine/validator.py
+index 5fd80f50..a4bac81e 100644
+--- a/ultralytics/engine/validator.py
++++ b/ultralytics/engine/validator.py
+@@ -118,11 +118,11 @@ class BaseValidator:
+         self.jdict = None
+         self.speed = {"preprocess": 0.0, "inference": 0.0, "loss": 0.0, "postprocess": 0.0}
+ 
+-        self.save_dir = save_dir or get_save_dir(self.args)
++        self.save_dir: Path = save_dir or get_save_dir(self.args)
+         (self.save_dir / "labels" if self.args.save_txt else self.save_dir).mkdir(parents=True, exist_ok=True)
+         if self.args.conf is None:
+             self.args.conf = 0.01 if self.args.task == "obb" else 0.001  # reduce OBB val memory usage
+-        self.args.imgsz = check_imgsz(self.args.imgsz, max_dim=1)
++        self.args.imgsz = check_imgsz(self.args.imgsz, max_dim=2)
+ 
+         self.plots = {}
+         self.callbacks = _callbacks or callbacks.get_default_callbacks()
+diff --git a/ultralytics/models/yolo/detect/val.py b/ultralytics/models/yolo/detect/val.py
+index a9c2ef05..d7e589a0 100644
+--- a/ultralytics/models/yolo/detect/val.py
++++ b/ultralytics/models/yolo/detect/val.py
+@@ -42,7 +42,7 @@ class DetectionValidator(BaseValidator):
+         >>> validator()
+     """
+ 
+-    def __init__(self, dataloader=None, save_dir=None, args=None, _callbacks=None) -> None:
++    def __init__(self, dataloader=None, save_dir=None, args=None, _callbacks=None, plot_settings=None) -> None:
+         """Initialize detection validator with necessary variables and settings.
+ 
+         Args:
+@@ -59,6 +59,7 @@ class DetectionValidator(BaseValidator):
+         self.iouv = torch.linspace(0.5, 0.95, 10)  # IoU vector for mAP@0.5:0.95
+         self.niou = self.iouv.numel()
+         self.metrics = DetMetrics()
++        self.plot_settings = plot_settings or {}
+ 
+     def preprocess(self, batch: dict[str, Any]) -> dict[str, Any]:
+         """Preprocess batch of images for YOLO validation.
+@@ -83,9 +84,9 @@ class DetectionValidator(BaseValidator):
+         """
+         val = self.data.get(self.args.split, "")  # validation path
+         self.is_coco = (
+-            isinstance(val, str)
+-            and "coco" in val
+-            and (val.endswith(f"{os.sep}val2017.txt") or val.endswith(f"{os.sep}test-dev2017.txt"))
++                isinstance(val, str)
++                and "coco" in val
++                and (val.endswith(f"{os.sep}val2017.txt") or val.endswith(f"{os.sep}test-dev2017.txt"))
+         )  # is COCO
+         self.is_lvis = isinstance(val, str) and "lvis" in val and not self.is_coco  # is LVIS
+         self.class_map = converter.coco80_to_coco91_class() if self.is_coco else list(range(1, len(model.names) + 1))
+@@ -93,6 +94,9 @@ class DetectionValidator(BaseValidator):
+         self.names = model.names
+         self.nc = len(model.names)
+         self.end2end = getattr(model, "end2end", False)
++        self.metrics.names = self.names
++        self.metrics.plot = self.args.plots
++        self.metrics.plot_settings = self.plot_settings
+         self.seen = 0
+         self.jdict = []
+         self.metrics.names = model.names
+diff --git a/ultralytics/optim/muon.py b/ultralytics/optim/muon.py
+index d3ac85ad..4651e46b 100644
+--- a/ultralytics/optim/muon.py
++++ b/ultralytics/optim/muon.py
+@@ -91,6 +91,8 @@ def muon_update(grad: torch.Tensor, momentum: torch.Tensor, beta: float = 0.95,
+     update = grad.lerp(momentum, beta) if nesterov else momentum
+     if update.ndim == 4:  # for the case of conv filters
+         update = update.view(len(update), -1)
++    elif update.ndim == 3:  # e.g. 3-D bias/embedding tables
++        update = update.view(update.shape[0], -1)
+     update = zeropower_via_newtonschulz5(update)
+     update *= max(1, grad.size(-2) / grad.size(-1)) ** 0.5
+     return update
+diff --git a/ultralytics/utils/callbacks/tensorboard.py b/ultralytics/utils/callbacks/tensorboard.py
+index 35a1cb14..725fff4b 100644
+--- a/ultralytics/utils/callbacks/tensorboard.py
++++ b/ultralytics/utils/callbacks/tensorboard.py
+@@ -1,5 +1,6 @@
+ # Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
+ 
++from matplotlib.figure import Figure
+ from ultralytics.utils import LOGGER, SETTINGS, TESTS_RUNNING, colorstr, torch_utils
+ from ultralytics.utils.torch_utils import smart_inference_mode
+ 
+@@ -38,6 +39,10 @@ def _log_scalars(scalars: dict, step: int = 0) -> None:
+         for k, v in scalars.items():
+             WRITER.add_scalar(k, v, step)
+ 
++def _log_figure(figure: Figure, step=0):
++    if WRITER:
++        tag: str = figure.axes[0].get_title()
++        WRITER.add_figure(tag, figure, step)
+ 
+ @smart_inference_mode()
+ def _log_tensorboard_graph(trainer) -> None:
+@@ -60,7 +65,8 @@ def _log_tensorboard_graph(trainer) -> None:
+     imgsz = trainer.args.imgsz
+     imgsz = (imgsz, imgsz) if isinstance(imgsz, int) else imgsz
+     p = next(trainer.model.parameters())  # for device, type
+-    im = torch.zeros((1, 3, *imgsz), device=p.device, dtype=p.dtype)  # input image (must be zeros, not empty)
++    ch = next(trainer.model.parameters()).shape[1] if next(trainer.model.parameters()).ndim == 4 else 3
++    im = torch.zeros((1, ch, *imgsz), device=p.device, dtype=p.dtype)  # input image (must be zeros, not empty)
+ 
+     # Try simple method first (YOLO)
+     try:
+@@ -84,7 +90,6 @@ def _log_tensorboard_graph(trainer) -> None:
+         except Exception as e2:
+             LOGGER.warning(f"{PREFIX}TensorBoard graph visualization failure: {e1} -> {e2}")
+ 
+-
+ def on_pretrain_routine_start(trainer) -> None:
+     """Initialize TensorBoard logging with SummaryWriter."""
+     if SummaryWriter:
+@@ -111,6 +116,14 @@ def on_train_epoch_end(trainer) -> None:
+ def on_fit_epoch_end(trainer) -> None:
+     """Log epoch metrics at end of training epoch."""
+     _log_scalars(trainer.metrics, trainer.epoch + 1)
++    for k,v in trainer.validator.epoch_class_metrics:
++        cls, metric = k.split('_')
++        _log_scalars({f'{metric}/{cls}': v}, trainer.epoch + 1)
++
++def on_train_end(trainer):
++    if WRITER:
++        for figure in trainer.validator.final_figures:
++            _log_figure(figure, 0)
+ 
+ 
+ callbacks = (
+@@ -119,6 +132,7 @@ callbacks = (
+         "on_train_start": on_train_start,
+         "on_fit_epoch_end": on_fit_epoch_end,
+         "on_train_epoch_end": on_train_epoch_end,
++        "on_train_end": on_train_end,
+     }
+     if SummaryWriter
+     else {}
+diff --git a/ultralytics/utils/loss.py b/ultralytics/utils/loss.py
+index 965f49d0..36b6022b 100644
+--- a/ultralytics/utils/loss.py
++++ b/ultralytics/utils/loss.py
+@@ -360,6 +360,59 @@ class v8DetectionLoss:
+         self.bbox_loss = BboxLoss(m.reg_max).to(device)
+         self.proj = torch.arange(m.reg_max, dtype=torch.float, device=device)
+ 
++        self.smoothing_M = None
++        if getattr(self.hyp, "asymmetric_smoothing", False) and torch.is_grad_enabled():
++            eps = float(getattr(self.hyp, "asymmetric_smoothing_eps", 0.05))
++            self.smoothing_M = self._build_smoothing_matrix(self._sister_groups(), model.names, eps=eps).to(device)
++        elif float(getattr(self.hyp, "general_smoothing_eps", 0.0)) > 0.0 and torch.is_grad_enabled():
++            eps = float(getattr(self.hyp, "general_smoothing_eps", 0.0))
++            self.smoothing_M = self._build_uniform_smoothing_matrix(self.nc, eps=eps).to(device)
++
++    def _sister_groups(self):
++        """Species whose calls are hard to tell apart, plus singletons for the rest.
++
++        Taken from hyp.smoothing_groups when the training pipeline supplies one
++        (yolobat reads files/taxonomy.yaml); the European species below are the
++        fallback, so older configs keep training as before.
++        """
++        groups = getattr(self.hyp, "smoothing_groups", None)
++        if groups:
++            return [list(group) for group in groups]
++        return [
++            ["Ppip", "Ppyg", "Pnat"],
++            ["Bbar"],
++            ["Rfer", "Rhip"],
++            ["Plecotus"],
++            ["Malc", "Mema", "Mdas", "Mbart", "Mbec", "Mdau", "Mmyo", "Mnat"],
++            ["Eser", "Nlei", "Nnoc"],
++            ["social-call"],
++            ["feeding-buzz"],
++        ]
++
++    def _build_smoothing_matrix(self, sister_groups, names, eps=0.08):
++        """M[c,c] = 1-eps, with eps split evenly over c's sisters. Rows sum to 1."""
++        labels = [names[i] for i in sorted(names)] if isinstance(names, dict) else list(names)
++        name_to_idx = {n: i for i, n in enumerate(labels)}
++        nc = len(labels)
++
++        M = torch.eye(nc)
++        for group in sister_groups:
++            # a class the dataset does not have is simply not smoothed towards
++            idxs = [name_to_idx[n] for n in group if n in name_to_idx]
++            if len(idxs) < 2:
++                continue
++            for c in idxs:
++                sisters = [j for j in idxs if j != c]
++                M[c, c] = 1 - eps
++                M[c, sisters] = eps / len(sisters)
++        return M
++
++    def _build_uniform_smoothing_matrix(self, nc: int, eps: float = 0.05) -> torch.Tensor:
++        """Same, but spread over all classes instead of sisters."""
++        M = torch.full((nc, nc), eps / (nc - 1))
++        M.fill_diagonal_(1 - eps)
++        return M
++
+     def preprocess(self, targets: torch.Tensor, batch_size: int, scale_tensor: torch.Tensor) -> torch.Tensor:
+         """Preprocess targets by converting to tensor format and scaling coordinates."""
+         nl, ne = targets.shape
+@@ -419,6 +472,9 @@ class v8DetectionLoss:
+             mask_gt,
+         )
+ 
++        if self.smoothing_M is not None and torch.is_grad_enabled():
++            target_scores = target_scores @ self.smoothing_M
++
+         target_scores_sum = max(target_scores.sum(), 1)
+ 
+         # Cls loss
+diff --git a/ultralytics/utils/metrics.py b/ultralytics/utils/metrics.py
+index 8c84d4b0..f370c291 100644
+--- a/ultralytics/utils/metrics.py
++++ b/ultralytics/utils/metrics.py
+@@ -10,6 +10,8 @@ from pathlib import Path
+ from typing import Any
+ 
+ import numpy as np
++import matplotlib.pyplot as plt
++from matplotlib.figure import Figure
+ import torch
+ 
+ from ultralytics.utils import LOGGER, DataExportMixin, SimpleClass, TryExcept, checks, plt_settings
+@@ -500,8 +502,9 @@ class ConfusionMatrix(DataExportMixin):
+ 
+     @TryExcept(msg="ConfusionMatrix plot failure")
+     @plt_settings()
+-    def plot(self, normalize: bool = True, save_dir: str = "", on_plot=None):
+-        """Plot the confusion matrix using matplotlib and save it to a file.
++    def plot(self, normalize: bool = True, save_dir: Path = Path(), on_plot=None, save=True, postfix: str = ""):
++        """
++        Plot the confusion matrix using matplotlib and save it to a file.
+ 
+         Args:
+             normalize (bool, optional): Whether to normalize the confusion matrix.
+@@ -521,15 +524,9 @@ class ConfusionMatrix(DataExportMixin):
+             names = names[keep_idx]  # slice class names
+             array = array[keep_idx, :][:, keep_idx]  # slice matrix rows and cols
+             n = (self.nc + k - 1) // k  # number of retained classes
+-        nc = n if self.task == "classify" else n + 1  # adjust for background if needed
+-        ticklabels = "auto"
+-        if 0 < nc < 99:
+-            ticklabels = names if self.task == "classify" else [*names, "background"]
+-        xy_ticks = np.arange(len(ticklabels)) if ticklabels != "auto" else np.arange(nc)
+-        tick_fontsize = max(6, 15 - 0.1 * nc)  # Minimum size is 6
+-        label_fontsize = max(6, 12 - 0.1 * nc)
+-        title_fontsize = max(6, 12 - 0.1 * nc)
+-        btm = max(0.1, 0.25 - 0.001 * nc)  # Minimum value is 0.1
++        nc = nn = n if self.task == "classify" else n + 1  # adjust for background if needed
++        ticklabels = ([*names, "background"]) if (0 < nn < 99) and (nn == nc) else "auto"
++        xy_ticks = np.arange(len(ticklabels))
+         with warnings.catch_warnings():
+             warnings.simplefilter("ignore")  # suppress empty matrix RuntimeWarning: All-NaN slice encountered
+             im = ax.imshow(array, cmap="Blues", vmin=0.0, interpolation="none")
+@@ -547,31 +544,38 @@ class ConfusionMatrix(DataExportMixin):
+                             f"{val:.2f}" if normalize else f"{int(val)}",
+                             ha="center",
+                             va="center",
+-                            fontsize=10,
++                            fontsize=8, #10,
+                             color="white" if val > color_threshold else "black",
+                         )
+             cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.05)
+         title = "Confusion Matrix" + " Normalized" * normalize
+-        ax.set_xlabel("True", fontsize=label_fontsize, labelpad=10)
+-        ax.set_ylabel("Predicted", fontsize=label_fontsize, labelpad=10)
+-        ax.set_title(title, fontsize=title_fontsize, pad=20)
++        ax.set_xlabel("True") #, fontsize=label_fontsize, labelpad=10)
++        ax.set_ylabel("Predicted") #, fontsize=label_fontsize, labelpad=10)
++        prefix = 'test_' if (save_dir.stem == 'validation' or save_dir.parent.stem == 'validation') else 'val_'
++        plot_prefix = 'Test ' if prefix == 'test_' else 'Validation '
++        title = "Epoch " + title if not save else plot_prefix + title
++        if postfix:
++            title += f" {postfix}"
++        ax.set_title(title) #, fontsize=title_fontsize, pad=20)
+         ax.set_xticks(xy_ticks)
+         ax.set_yticks(xy_ticks)
+         ax.tick_params(axis="x", bottom=True, top=False, labelbottom=True, labeltop=False)
+         ax.tick_params(axis="y", left=True, right=False, labelleft=True, labelright=False)
+         if ticklabels != "auto":
+-            ax.set_xticklabels(ticklabels, fontsize=tick_fontsize, rotation=90, ha="center")
+-            ax.set_yticklabels(ticklabels, fontsize=tick_fontsize)
++            ax.set_xticklabels(ticklabels, rotation=90, ha="center") #fontsize=tick_fontsize
++            ax.set_yticklabels(ticklabels) #fontsize=tick_fontsize
+         for s in {"left", "right", "bottom", "top", "outline"}:
+             if s != "outline":
+                 ax.spines[s].set_visible(False)  # Confusion matrix plot don't have outline
+             cbar.ax.spines[s].set_visible(False)
+-        fig.subplots_adjust(left=0, right=0.84, top=0.94, bottom=btm)  # Adjust layout to ensure equal margins
+-        plot_fname = Path(save_dir) / f"{title.lower().replace(' ', '_')}.png"
+-        fig.savefig(plot_fname, dpi=250)
++        fig.subplots_adjust(left=0.1, right=0.84, top=0.96, bottom=0.16)  # Adjust layout to ensure equal margins
++        plot_fname = Path(save_dir) / f"{title.lower().replace(' ', '_')}.svg" #.png"
++        if save:
++            fig.savefig(plot_fname, dpi=250)
+         plt.close(fig)
+         if on_plot:
+             on_plot(plot_fname, {"type": "confusion_matrix", "matrix": self.matrix.tolist()})
++        return fig
+ 
+     def print(self):
+         """Print the confusion matrix to the console."""
+@@ -624,16 +628,34 @@ def smooth(y: np.ndarray, f: float = 0.05) -> np.ndarray:
+     return np.convolve(yp, np.ones(nf) / nf, mode="valid")  # y-smoothed
+ 
+ 
++def class_plot_style(plot_settings, i: int) -> dict:
++    """Color and line style of class i, empty when plot_settings has no entry for it.
++
++    Empty means matplotlib picks, so a run whose plot_settings is missing or
++    shorter than the class list still plots (single_cls, for instance).
++    """
++    entry = plot_settings[i] if i < len(plot_settings) else {}
++    style = {}
++    if entry.get("line_style"):
++        style["linestyle"] = entry["line_style"]
++    if entry.get("color"):
++        style["color"] = entry["color"]
++    return style
++
++
+ @plt_settings()
+ def plot_pr_curve(
+     px: np.ndarray,
+     py: np.ndarray,
+     ap: np.ndarray,
+-    save_dir: Path = Path("pr_curve.png"),
++    save_dir: Path = Path("pr_curve.svg"),
+     names: dict[int, str] = {},
+     on_plot=None,
+-):
+-    """Plot precision-recall curve.
++    plot_settings=None,
++    prefix="",
++    postfix: str=""):
++    """
++    Plot precision-recall curve.
+ 
+     Args:
+         px (np.ndarray): X values for the PR curve.
+@@ -643,43 +665,49 @@ def plot_pr_curve(
+         names (dict[int, str], optional): Dictionary mapping class indices to class names.
+         on_plot (callable, optional): Function to call after plot is saved.
+     """
++    plot_settings = plot_settings or {}
+     import matplotlib.pyplot as plt  # scope for faster 'import ultralytics'
+ 
+     fig, ax = plt.subplots(1, 1, figsize=(9, 6), tight_layout=True)
+     py = np.stack(py, axis=1)
+ 
+-    if 0 < len(names) < 21:  # display per-class legend if < 21 classes
+-        for i, y in enumerate(py.T):
+-            ax.plot(px, y, linewidth=1, label=f"{names[i]} {ap[i, 0]:.3f}")  # plot(recall, precision)
+-    else:
+-        ax.plot(px, py, linewidth=1, color="gray")  # plot(recall, precision)
+ 
+-    ax.plot(px, py.mean(1), linewidth=3, color="blue", label=f"all classes {ap[:, 0].mean():.3f} mAP@0.5")
++    for i, y in enumerate(py.T):
++        ax.plot(px, y, linewidth=1, **class_plot_style(plot_settings, i), label=f"{names[i]} {ap[i, 0]:.3f}")
++
++    ax.plot(px, py.mean(1), color="black", label=f"all classes {ap[:, 0].mean():.3f} mAP@0.5")
+     ax.set_xlabel("Recall")
+     ax.set_ylabel("Precision")
+     ax.set_xlim(0, 1)
+     ax.set_ylim(0, 1)
+     ax.legend(bbox_to_anchor=(1.04, 1), loc="upper left")
+-    ax.set_title("Precision-Recall Curve")
++    title = f"{prefix}Precision-Recall Curve"
++    if postfix:
++        title += f" {postfix}"
++    ax.set_title(title)
+     fig.savefig(save_dir, dpi=250)
+     plt.close(fig)
+     if on_plot:
+         # Pass PR curve data for interactive plotting (class names stored at model level)
+         # Transpose py to match other curves: y[class][point] format
+         on_plot(save_dir, {"type": "pr_curve", "x": px.tolist(), "y": py.T.tolist(), "ap": ap.tolist()})
++    return fig
+ 
+ 
+ @plt_settings()
+ def plot_mc_curve(
+     px: np.ndarray,
+     py: np.ndarray,
+-    save_dir: Path = Path("mc_curve.png"),
++    save_dir: Path = Path("mc_curve.svg"),
+     names: dict[int, str] = {},
+     xlabel: str = "Confidence",
+     ylabel: str = "Metric",
+     on_plot=None,
+-):
+-    """Plot metric-confidence curve.
++    plot_settings=None,
++    prefix="",
++    postfix: str=""):
++    """
++    Plot metric-confidence curve.
+ 
+     Args:
+         px (np.ndarray): X values for the metric-confidence curve.
+@@ -690,15 +718,14 @@ def plot_mc_curve(
+         ylabel (str, optional): Y-axis label.
+         on_plot (callable, optional): Function to call after plot is saved.
+     """
++    plot_settings = plot_settings or {}
+     import matplotlib.pyplot as plt  # scope for faster 'import ultralytics'
+ 
+     fig, ax = plt.subplots(1, 1, figsize=(9, 6), tight_layout=True)
+ 
+-    if 0 < len(names) < 21:  # display per-class legend if < 21 classes
+-        for i, y in enumerate(py):
+-            ax.plot(px, y, linewidth=1, label=f"{names[i]}")  # plot(confidence, metric)
+-    else:
+-        ax.plot(px, py.T, linewidth=1, color="gray")  # plot(confidence, metric)
++
++    for i, y in enumerate(py):
++        ax.plot(px, y, linewidth=1, **class_plot_style(plot_settings, i), label=f"{names[i]}")
+ 
+     y = smooth(py.mean(0), 0.1)
+     ax.plot(px, y, linewidth=3, color="blue", label=f"all classes {y.max():.2f} at {px[y.argmax()]:.3f}")
+@@ -707,12 +734,61 @@ def plot_mc_curve(
+     ax.set_xlim(0, 1)
+     ax.set_ylim(0, 1)
+     ax.legend(bbox_to_anchor=(1.04, 1), loc="upper left")
+-    ax.set_title(f"{ylabel}-Confidence Curve")
++    title = f"{prefix}{ylabel}-Confidence Curve"
++    if postfix:
++        title += f" {postfix}"
++    ax.set_title(title)
+     fig.savefig(save_dir, dpi=250)
+     plt.close(fig)
+     if on_plot:
+         # Pass metric-confidence curve data for interactive plotting (class names stored at model level)
+         on_plot(save_dir, {"type": f"{ylabel.lower()}_curve", "x": px.tolist(), "y": py.tolist()})
++    return fig
++
++
++def plot_per_class_curves(save_dir, names={}, on_plot=None, plot_settings=None, prefix="", postfix: str=""):
++    """Plots metrics per class."""
++    plot_settings = plot_settings or {}
++    figures: list[Figure] = []
++
++    for class_metric in ["class_metrics.csv", "class1_metrics.csv", "class2_metrics.csv"]:
++        if save_dir.stem in ["class1_metrics", "class2_metrics"] and class_metric in ["class1_metrics.csv", "class2_metrics.csv"]:
++            class_metrics = save_dir.parent / class_metric
++        else:
++            class_metrics = save_dir.joinpath(class_metric)
++        if not class_metrics.exists():
++            continue
++
++        import pandas as pd
++        df = pd.read_csv(class_metrics)
++        for metric in ['Precision', 'Recall', 'mAP50', 'mAP50:95', 'F1'] if 'mAP50' in "".join(df.columns) else ['Precision', 'Recall', 'F1']:
++            fig, ax = plt.subplots(1, 1, figsize=(9, 6), tight_layout=True)
++            column_missing = False
++            for i, y in names.items():
++                col = f"{y}_{metric}"
++                if col not in df.columns:
++                    column_missing = True
++                    break  # Break out of names loop if column doesn't exist
++                ax.plot(df['epoch'], df[col], linewidth=1, **class_plot_style(plot_settings, i), label=f"{names[i]}")
++
++            if column_missing:
++                plt.close(fig)  # Close the figure since we won't use it
++                break  # Break out of metrics loop
++
++            ax.set_xlabel('Epoch')
++            ax.set_ylabel(metric)
++            ax.legend(bbox_to_anchor=(1.04, 1), loc="upper left")
++            title = f"{prefix}Epoch {metric} per Class"
++            if postfix:
++                title += f" {postfix}"
++            ax.set_title(title)
++            save_path = save_dir.joinpath(f"{metric}_per_class.svg")
++            fig.savefig(save_path, dpi=250)
++            plt.close(fig)
++            figures.append(fig)
++            if on_plot:
++                on_plot(save_path)
++    return figures
+ 
+ 
+ def compute_ap(recall: list[float], precision: list[float]) -> tuple[float, np.ndarray, np.ndarray]:
+@@ -758,6 +834,8 @@ def ap_per_class(
+     names: dict[int, str] = {},
+     eps: float = 1e-16,
+     prefix: str = "",
++    plot_settings=None,
++    postfix: str=""
+ ) -> tuple:
+     """Compute the average precision per class for object detection evaluation.
+ 
+@@ -772,6 +850,7 @@ def ap_per_class(
+         names (dict[int, str], optional): Dictionary of class names to plot PR curves.
+         eps (float, optional): A small value to avoid division by zero.
+         prefix (str, optional): A prefix string for saving the plot files.
++        plot_settings (dict, optional): A dictionary containing plot settings like colors and line style. Defaults to None.
+ 
+     Returns:
+         tp (np.ndarray): True positive counts at threshold given by max F1 metric for each class.
+@@ -786,7 +865,10 @@ def ap_per_class(
+         f1_curve (np.ndarray): F1-score curves for each class.
+         x (np.ndarray): X-axis values for the curves.
+         prec_values (np.ndarray): Precision values at mAP@0.5 for each class.
++        figures (list[Figure]): List of all the figures created during validation.
+     """
++    plot_settings = plot_settings or {}
++    figures: list[Figure] = []
+     # Sort by objectness
+     i = np.argsort(-conf)
+     tp, conf, pred_cls = tp[i], conf[i], pred_cls[i]
+@@ -831,16 +913,19 @@ def ap_per_class(
+     f1_curve = 2 * p_curve * r_curve / (p_curve + r_curve + eps)
+     names = {i: names[k] for i, k in enumerate(unique_classes) if k in names}  # dict: only classes that have data
+     if plot:
+-        plot_pr_curve(x, prec_values, ap, save_dir / f"{prefix}PR_curve.png", names, on_plot=on_plot)
+-        plot_mc_curve(x, f1_curve, save_dir / f"{prefix}F1_curve.png", names, ylabel="F1", on_plot=on_plot)
+-        plot_mc_curve(x, p_curve, save_dir / f"{prefix}P_curve.png", names, ylabel="Precision", on_plot=on_plot)
+-        plot_mc_curve(x, r_curve, save_dir / f"{prefix}R_curve.png", names, ylabel="Recall", on_plot=on_plot)
++        prefix = prefix or ('test_' if (save_dir.stem == 'validation' or save_dir.parent.stem == 'validation') else 'val_')
++        plot_prefix = 'Test ' if prefix == 'test_' else 'Validation '
++        figures.extend([plot_pr_curve(x, prec_values, ap, save_dir / f"{prefix}PR_curve.svg", names, on_plot=on_plot, plot_settings=plot_settings, prefix=plot_prefix, postfix=postfix),
++                        plot_mc_curve(x, f1_curve, save_dir / f"{prefix}F1_curve.svg", names, ylabel="F1", on_plot=on_plot, plot_settings=plot_settings, prefix=plot_prefix, postfix=postfix),
++                        plot_mc_curve(x, p_curve, save_dir / f"{prefix}P_curve.svg", names, ylabel="Precision", on_plot=on_plot, plot_settings=plot_settings, prefix=plot_prefix, postfix=postfix),
++                        plot_mc_curve(x, r_curve, save_dir / f"{prefix}R_curve.svg", names, ylabel="Recall", on_plot=on_plot, plot_settings=plot_settings, prefix=plot_prefix, postfix=postfix)])
++        figures.extend(plot_per_class_curves(save_dir=save_dir, names=names, on_plot=on_plot, plot_settings=plot_settings, prefix=plot_prefix, postfix=postfix)) # type: ignore
+ 
+     i = smooth(f1_curve.mean(0), 0.1).argmax()  # max F1 index
+     p, r, f1 = p_curve[:, i], r_curve[:, i], f1_curve[:, i]  # max-F1 precision, recall, F1 values
+     tp = (r * nt).round()  # true positives
+     fp = (tp / (p + eps) - tp).round()  # false positives
+-    return tp, fp, p, r, f1, ap, unique_classes.astype(int), p_curve, r_curve, f1_curve, x, prec_values
++    return (tp, fp, p, r, f1, ap, unique_classes.astype(int), p_curve, r_curve, f1_curve, x, prec_values), figures
+ 
+ 
+ class Metric(SimpleClass):
+@@ -947,9 +1032,9 @@ class Metric(SimpleClass):
+         """Return mean of results, mp, mr, map50, map."""
+         return [self.mp, self.mr, self.map50, self.map]
+ 
+-    def class_result(self, i: int) -> tuple[float, float, float, float]:
++    def class_result(self, i: int) -> tuple[float, float, float, float, float]:
+         """Return class-aware result, p[i], r[i], ap50[i], ap[i]."""
+-        return self.p[i], self.r[i], self.ap50[i], self.ap[i]
++        return self.p[i], self.r[i], self.ap50[i], self.ap[i], self.f1[i]
+ 
+     @property
+     def maps(self) -> np.ndarray:
+@@ -1037,8 +1122,8 @@ class DetMetrics(SimpleClass, DataExportMixin):
+         summary: Generate a summarized representation of per-class detection metrics as a list of dictionaries.
+     """
+ 
+-    def __init__(self, names: dict[int, str] = {}) -> None:
+-        """Initialize a DetMetrics instance with class names.
++    def __init__(self, names: dict[int, str] = {}, postfix: str="") -> None:
++        """Initialize a DetMetrics instance with a save directory, plot flag, and class names.
+ 
+         Args:
+             names (dict[int, str], optional): Dictionary of class names.
+@@ -1046,9 +1131,13 @@ class DetMetrics(SimpleClass, DataExportMixin):
+         self.names = names
+         self.box = Metric()
+         self.speed = {"preprocess": 0.0, "inference": 0.0, "loss": 0.0, "postprocess": 0.0}
++        self.task = "detect"
++        self.plot_settings = None
++        self.figures: list[Figure] = []
+         self.stats = dict(tp=[], conf=[], pred_cls=[], target_cls=[], target_img=[])
+         self.nt_per_class = None
+         self.nt_per_image = None
++        self.postfix = postfix
+ 
+     def update_stats(self, stat: dict[str, Any]) -> None:
+         """Update statistics by appending new values to existing stat collections.
+@@ -1074,7 +1163,7 @@ class DetMetrics(SimpleClass, DataExportMixin):
+         stats = {k: np.concatenate(v, 0) for k, v in self.stats.items()}  # to numpy
+         if not stats:
+             return stats
+-        results = ap_per_class(
++        results, figures = ap_per_class(
+             stats["tp"],
+             stats["conf"],
+             stats["pred_cls"],
+@@ -1084,9 +1173,12 @@ class DetMetrics(SimpleClass, DataExportMixin):
+             names=self.names,
+             on_plot=on_plot,
+             prefix="Box",
+-        )[2:]
++            plot_settings=self.plot_settings,
++            postfix=self.postfix,
++        )
++        self.figures = figures
+         self.box.nc = len(self.names)
+-        self.box.update(results)
++        self.box.update(results[2:])
+         self.nt_per_class = np.bincount(stats["target_cls"].astype(int), minlength=len(self.names))
+         self.nt_per_image = np.bincount(stats["target_img"].astype(int), minlength=len(self.names))
+         return stats
+@@ -1233,7 +1325,7 @@ class SegmentMetrics(DetMetrics):
+             save_dir=save_dir,
+             names=self.names,
+             prefix="Mask",
+-        )[2:]
++        )[0][2:]
+         self.seg.nc = len(self.names)
+         self.seg.update(results_mask)
+         return stats
+@@ -1369,7 +1461,7 @@ class PoseMetrics(DetMetrics):
+             save_dir=save_dir,
+             names=self.names,
+             prefix="Pose",
+-        )[2:]
++        )[0][2:]
+         self.pose.nc = len(self.names)
+         self.pose.update(results_pose)
+         return stats
+diff --git a/ultralytics/utils/nms.py b/ultralytics/utils/nms.py
+index b7c75f68..2f433223 100644
+--- a/ultralytics/utils/nms.py
++++ b/ultralytics/utils/nms.py
+@@ -26,6 +26,7 @@ def non_max_suppression(
+     rotated: bool = False,
+     end2end: bool = False,
+     return_idxs: bool = False,
++    return_cls_scores: bool = False,
+ ):
+     """Perform non-maximum suppression (NMS) on prediction results.
+ 
+@@ -86,7 +87,8 @@ def non_max_suppression(
+         prediction[..., :4] = xywh2xyxy(prediction[..., :4])  # xywh to xyxy
+ 
+     t = time.time()
+-    output = [torch.zeros((0, 6 + extra), device=prediction.device)] * bs
++    out_cols = 6 + extra + (nc if return_cls_scores else 0)
++    output = [torch.zeros((0, out_cols), device=prediction.device)] * bs
+     keepi = [torch.zeros((0, 1), device=prediction.device)] * bs  # to store the kept idxs
+     for xi, (x, xk) in enumerate(zip(prediction, xinds)):  # image index, (preds, preds indices)
+         # Apply constraints
+@@ -113,13 +115,19 @@ def non_max_suppression(
+ 
+         if multi_label:
+             i, j = torch.where(cls > conf_thres)
+-            x = torch.cat((box[i], x[i, 4 + j, None], j[:, None].float(), mask[i]), 1)
++            if return_cls_scores:
++                x = torch.cat((box[i], x[i, 4 + j, None], j[:, None].float(), cls[i], mask[i]), 1)
++            else:
++                x = torch.cat((box[i], x[i, 4 + j, None], j[:, None].float(), mask[i]), 1)
+             if return_idxs:
+                 xk = xk[i]
+         else:  # best class only
+             conf, j = cls.max(1, keepdim=True)
+             filt = conf.view(-1) > conf_thres
+-            x = torch.cat((box, conf, j.float(), mask), 1)[filt]
++            if return_cls_scores:
++                x = torch.cat((box, conf, j.float(), cls, mask), 1)[filt]
++            else:
++                x = torch.cat((box, conf, j.float(), mask), 1)[filt]
+             if return_idxs:
+                 xk = xk[filt]
+ 
+diff --git a/ultralytics/utils/plotting.py b/ultralytics/utils/plotting.py
+index c0a07a75..47465595 100644
+--- a/ultralytics/utils/plotting.py
++++ b/ultralytics/utils/plotting.py
+@@ -8,6 +8,7 @@ from pathlib import Path
+ from typing import Any
+ 
+ import cv2
++import matplotlib.pyplot as plt
+ import numpy as np
+ import torch
+ from PIL import Image, ImageDraw, ImageFont
+@@ -181,7 +182,7 @@ class Annotator:
+ 
+     Examples:
+         >>> from ultralytics.utils.plotting import Annotator
+-        >>> im0 = cv2.imread("test.png")
++        >>> im0 = cv2.imread("test.svg")
+         >>> annotator = Annotator(im0, line_width=10)
+         >>> annotator.box_label([10, 10, 100, 100], "person", (255, 0, 0))
+     """
+@@ -288,7 +289,7 @@ class Annotator:
+ 
+         Examples:
+             >>> from ultralytics.utils.plotting import Annotator
+-            >>> im0 = cv2.imread("test.png")
++            >>> im0 = cv2.imread("test.svg")
+             >>> annotator = Annotator(im0, line_width=10)
+             >>> annotator.get_txt_color(color=(104, 31, 17))  # return (255, 255, 255)
+         """
+@@ -310,7 +311,7 @@ class Annotator:
+ 
+         Examples:
+             >>> from ultralytics.utils.plotting import Annotator
+-            >>> im0 = cv2.imread("test.png")
++            >>> im0 = cv2.imread("test.svg")
+             >>> annotator = Annotator(im0, line_width=10)
+             >>> annotator.box_label(box=[10, 20, 30, 40], label="person")
+         """
+@@ -550,7 +551,7 @@ class Annotator:
+ 
+         Examples:
+             >>> from ultralytics.utils.plotting import Annotator
+-            >>> im0 = cv2.imread("test.png")
++            >>> im0 = cv2.imread("test.svg")
+             >>> annotator = Annotator(im0, line_width=10)
+             >>> annotator.get_bbox_dimension(bbox=[10, 20, 30, 40])
+         """
+@@ -855,7 +856,7 @@ def plot_images(
+ @plt_settings()
+ def plot_results(file: str = "path/to/results.csv", dir: str = "", on_plot: Callable | None = None):
+     """Plot training results from a results CSV file. The function supports various types of data including
+-    segmentation, pose estimation, and classification. Plots are saved as 'results.png' in the directory where the
++    segmentation, pose estimation, and classification. Plots are saved as 'results.svg' in the directory where the
+     CSV is located.
+ 
+     Args:
+@@ -900,7 +901,7 @@ def plot_results(file: str = "path/to/results.csv", dir: str = "", on_plot: Call
+         except Exception as e:
+             LOGGER.error(f"Plotting error for {f}: {e}")
+     ax[1].legend()
+-    fname = save_dir / "results.png"
++    fname = save_dir / "results.svg"
+     fig.savefig(fname, dpi=200)
+     plt.close()
+     if on_plot:
+@@ -996,7 +997,7 @@ def plot_tune_results(csv_file: str = "tune_results.csv", exclude_zero_fitness_p
+         plt.tick_params(axis="both", labelsize=8)  # Set axis label size to 8
+         if i % n != 0:
+             plt.yticks([])
+-    _save_one_file(csv_file.with_name("tune_scatter_plots.png"))
++    _save_one_file(csv_file.with_name("tune_scatter_plots.svg"))
+ 
+     # Fitness vs iteration
+     x = range(1, len(fitness) + 1)
+@@ -1008,7 +1009,7 @@ def plot_tune_results(csv_file: str = "tune_results.csv", exclude_zero_fitness_p
+     plt.ylabel("Fitness")
+     plt.grid(True)
+     plt.legend()
+-    _save_one_file(csv_file.with_name("tune_fitness.png"))
++    _save_one_file(csv_file.with_name("tune_fitness.svg"))
+ 
+ 
+ @plt_settings()
+@@ -1030,7 +1031,7 @@ def feature_visualization(x, module_type: str, stage: int, n: int = 32, save_dir
+     if isinstance(x, torch.Tensor):
+         _, channels, height, width = x.shape  # batch, channels, height, width
+         if height > 1 and width > 1:
+-            f = save_dir / f"stage{stage}_{module_type.rsplit('.', 1)[-1]}_features.png"  # filename
++            f = save_dir / f"stage{stage}_{module_type.rsplit('.')[-1]}_features.svg"  # filename
+ 
+             blocks = torch.chunk(x[0].cpu(), channels, dim=0)  # select batch index 0, block by channels
+             n = min(n, channels)  # number of plots

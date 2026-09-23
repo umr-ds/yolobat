@@ -1,0 +1,42 @@
+cff-version: 1.2.0
+message: >-
+  If you use this software, please cite the paper below. It is currently under
+  review at Ecological Informatics; the citation will be updated on acceptance.
+title: YOLObat
+abstract: >-
+  Training pipeline for YOLObat, a YOLO26 detector for bat species and bat
+  behavior in bioacoustic recordings.
+type: software
+license: AGPL-3.0-or-later
+authors:
+  - family-names: Vogelbacher
+    given-names: Markus
+    affiliation: "Department of Mathematics and Computer Science, Marburg University, Marburg, Germany"
+  - family-names: Bellafkir
+    given-names: Hicham
+    affiliation: "Department of Mathematics and Computer Science, Marburg University, Marburg, Germany"
+  - family-names: Fuchs
+    given-names: Michael
+    affiliation: "trackIT Systems GmbH, Marburg, Germany"
+  - family-names: Freisleben
+    given-names: Bernd
+    affiliation: "Department of Mathematics and Computer Science, Marburg University, Marburg, Germany"
+preferred-citation:
+  type: article
+  title: >-
+    YOLObat: Real-time Acoustic Bat Species and Behavior Recognition via
+    Frequency Positional Encodings and Taxonomy-aware Label Smoothing
+  authors:
+    - family-names: Vogelbacher
+      given-names: Markus
+    - family-names: Bellafkir
+      given-names: Hicham
+    - family-names: Fuchs
+      given-names: Michael
+    - family-names: Freisleben
+      given-names: Bernd
+  journal: Ecological Informatics
+  year: 2026
+  # TODO once accepted: add doi, volume, and the article number or pages.
+  # TODO once the preprint is online: add its DOI or arXiv identifier here.
+  notes: Under review at Ecological Informatics. A preprint will follow.

@@ -1,0 +1,23 @@
+# Which classes belong together. Class names must match the ones in the
+# annotation file; anything not listed here is simply left on its own.
+
+# Species whose calls are easily confused. Taxonomy-aware label smoothing moves
+# probability mass only within a group, so an unlisted class gets no smoothing.
+# The calls are deliberately absent: they are confused with nothing.
+smoothing_groups:
+  - [Ppip, Ppyg, Pnat]
+  - [Rfer, Rhip]
+  - [Malc, Mema, Mdas, Mbart, Mbec, Mdau, Mmyo, Mnat]
+  - [Eser, Nlei, Nnoc]
+
+# Groups the results are also reported for, and the color each class is drawn
+# with in the validation plots. Unlike the smoothing groups, the two call types
+# are reported together.
+report_groups:
+  Pipistrelloid: [Ppip, Ppyg, Pnat]
+  Barbastella: [Bbar]
+  Rhinolophus: [Rfer, Rhip]
+  Plecotus: [Plecotus]
+  Myotis: [Malc, Mema, Mdas, Mbart, Mbec, Mdau, Mmyo, Mnat]
+  Nyctaloid: [Eser, Nlei, Nnoc]
+  Call: [feeding-buzz, social-call]

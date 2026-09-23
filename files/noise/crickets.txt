@@ -1,0 +1,9 @@
+# Background-noise pool: crickets.
+# One recording per line, relative to the audio directory mounted at /data/bats,
+# for example:
+#
+#   Noise/crickets/recording_001.flac
+#
+# The listed recordings are mixed into training samples with probability
+# crickets_noise (files/cfg.yaml) and are held out of the training set itself.
+# Leave the list empty to train without the noise augmentation.

@@ -1,0 +1,15 @@
+.git/
+__pycache__/
+.ipynb_checkpoints/
+var/*
+# the placeholder export, which shows the format an own export needs
+!var/data_exports/
+var/data_exports/*
+!var/data_exports/yolobat_dataset.json
+!var/data_exports/yolobat_train.txt
+!var/data_exports/yolobat_val.txt
+classes.yaml
+runs/
+*.pt
+*.onnx
+.env

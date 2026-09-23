@@ -1,0 +1,6 @@
+onnxruntime
+soundfile
+soxr
+numpy
+scipy
+matplotlib   # only for detect.py --save-plots

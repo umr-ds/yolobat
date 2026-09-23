@@ -1,0 +1,33 @@
+services:
+    yolobat:
+        build:
+            dockerfile: Dockerfile
+            context: .
+        image: yolobat:8.4.21
+        command: /bin/bash
+        stdin_open: true
+        tty: true
+        working_dir: /yolobat-train
+        volumes:
+            - ./:/yolobat-train
+            # training output: runs, checkpoints and logs. Ultralytics writes to
+            # /ultralytics/runs, which is inside the image, so it is mapped out.
+            - ${RUNS_DIR:-./runs}:/ultralytics/runs
+            - type: bind
+              source: ${AUDIO_DIR:?set AUDIO_DIR in .env}
+              target: /data/bats
+              read_only: true
+              bind:
+                  create_host_path: false
+        ports:
+            - 127.0.0.1:${TENSORBOARD_PORT:-6006}:6006 # tensorboard
+        environment:
+            CUDA_VISIBLE_DEVICES: ${GPU_ID:-0}
+        shm_size: ${SHM_SIZE:-4gb}
+        deploy:
+            resources:
+                reservations:
+                    devices:
+                        - driver: nvidia
+                          device_ids: ["${GPU_ID:-0}"]
+                          capabilities: [gpu]
