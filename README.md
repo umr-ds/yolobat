@@ -60,6 +60,18 @@ docker compose run --rm yolobat python Main.py --set epochs=100 batch=64
 Checkpoints, logs and plots appear under `runs/` on the host. TensorBoard is
 served on `127.0.0.1:6006`.
 
+Our trained checkpoints are available
+[here](https://dshare.mathematik.uni-marburg.de/index.php/s/Z5bb4mDN96TAt3P):
+the n, s and m models with five seeds each. Unpack them into `var/models/` and
+point `model` at one to continue from it instead of training from scratch:
+
+```bash
+docker compose run --rm yolobat python Main.py --set model=var/models/yolobat-n/seed2.pt
+```
+
+The paper reports the mean over the five seeds. For a single model, seed 2 is the
+best of the n and s runs and seed 4 of m.
+
 `files/cfg.yaml` is the configuration the published models were trained with:
 YOLO26n, 150 epochs, batch 16, MuSGD with a cosine schedule, mosaic with
 positional encodings and taxonomy-aware smoothing at eps 0.05. The spectrogram
